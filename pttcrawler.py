@@ -1,28 +1,35 @@
-"""telnet bbs crawler engine
-Usage:
-    pttcrawer.py getindex <id>
-    pttcrawer.py <site> <id> <passwd>
-"""
-from docopt import docopt
-
 import telnetlib
 import sys
 import time
 import re
 import dateutil.parser
 
-from .settings import LOGIN_INFO
-
-# 
-
 # 搞懂了，bbs 根據 command return 的資料是針對前一畫面的局部更新，所以         
 
-class BBSPage:
+class PlainTxtMixin:
+    """docstring for PlainTxtMixin"""
     def __init__(self, raw_content=''):
         self.raw_content = raw_content
         self.HTagPattern = re.escape(chr(27)) + r'\[[\d\;]*H'
         self.ColorTagPattern = re.escape(chr(27)) + r'\[[\d\;]*m'
         self.CleanToEndlineTag = re.escape(chr(27)) + r'\[K'
+        
+    def plaintxt(self, c):
+        c = re.sub(self.HTagPattern, '', c)
+        c = re.sub(self.ColorTagPattern, '', c)
+        c = re.sub(self.CleanToEndlineTag, '', c)
+        # if chr(27) in c:
+        #     c_index = c.index(chr(27))
+        #     print("c.index(chr(27)): %s" % c_index)
+        #     print('>>>{0}<<<'.format(c[c_index-10:c_index+10]))
+        #     raise Exception('plaintxt is not clean yet.')
+        return c
+
+
+class BBSPage(PlainTxtMixin):
+    def __init__(self, raw_content=''):
+
+        super(BBSPage, self).__init__()
 
         self.current_page = None
         self.total_page = None
@@ -82,7 +89,7 @@ class BBSPage:
         
         current_lines_len = len(lines)
         while len(lines) != (self.line_end - self.line_start + 1):
-            padding_info = []
+            # padding_info = []
             for i in range(len(lines)):
                 maybe_H_tag = re.findall(r'\x1b\[(\d+);\d+H', lines[i])
                 # print(maybe_H_tag)
@@ -124,19 +131,13 @@ class BBSPage:
         if current_page == total_page:
             self.is_tailpage = True
 
-    def plaintxt(self, c):
-        c = re.sub(self.HTagPattern, '', c)
-        c = re.sub(self.ColorTagPattern, '', c)
-        c = re.sub(self.CleanToEndlineTag, '', c)
-        assert not chr(27) in c
-        return c
 
 
 class BBSIndexPage(BBSPage):
-    """docstring for BBSIndex"""
+    """docstring for BBSIndexPage"""
     def __init__(self, boardname=''):
         self.boardname = boardname
-        super(BBSIndex, self).__init__()
+        super(BBSIndexPage, self).__init__()
 
     def get_current_line(self):
         content = self.raw_content
@@ -211,7 +212,7 @@ class BBSArticle(BBSPage):
 
 class PttRobot:
 
-    def __init__(self, user, passwd, site='ptt2.cc', wait_time=0.5, index_range=[1,100]):
+    def __init__(self, user, passwd, site, wait_time=0.5, index_range=[1,100]):
         self.site = site
         self.index_range = index_range
         self.tn = telnetlib.Telnet(self.site)
@@ -307,7 +308,7 @@ class PttRobot:
     def get_current_line(self):
         esc = '\x1b'
         line_start = re.escape(esc) + r'\[\d{1,2};\dH'
-        line_end = re.escape(esc) + r'\[K'
+        # line_end = re.escape(esc) + r'\[K'
         content = self.content_buffer
         d = content.split('文章選讀')[0]
         current_title = re.split(line_start, d[d.rfind('●'):])[0]
@@ -352,7 +353,7 @@ class PttRobot:
             while "任意鍵" in content:
                 print("資訊頁面，按任意鍵繼續...")
                 self.enter()
-                self.wait(2)
+                self.wait(3)
                 content = self.CtrlL().safe_content()
                 
             if "要刪除以上錯誤嘗試" in content:
@@ -381,12 +382,6 @@ class PttRobot:
         self.keyin("qqqqqqqqqg\r\ny\r\n")
         return self
 
-    def toboard(self):
-        # enter Board
-        self.keyin("f").enter().keyin("5").enter(2).keyin("15").enter(3)
-        self.wait()
-        return self
-
     def download_article(self):
         # pre-check: in index? no, should check in BBSArticle
         article = BBSArticle()
@@ -408,87 +403,4 @@ class PttRobot:
         article.save()
         return self
 
-    def mission1(self, _range):
-        # 
-        for i in _range:
-            print('+', end='')
-            sys.stdout.flush()
-            if i % 10 == 0:
-                print(i, end='')
-            # into article
-            ptt_robot.keyin(str(i)).enter(2).CtrlL()
-            # read first page
-            content = self.wait_until(lambda c: c and ('【徵求中】' not in c[:100]))
 
-            if_flyllis = re.findall('flyllis', content, re.IGNORECASE)
-
-            if if_flyllis:
-                with open(self.output_file_name, 'a') as f:
-                    f.write("%s\n" % i)
-
-            self.wait()
-            ptt_robot.left()
-
-            if '★ 這份文件是可播放的文字動畫，要開始播放嗎？ [Y/n]' in content[-70:]:
-                ptt_robot.left()
-
-            content = self.wait_until(lambda c: '【徵求中】' in c[:100])
-
-    def mission2(self, target_ids):
-        for aid in target_ids:
-            # into article
-            ptt_robot.keyin(str(aid)).enter().CtrlL().wait().refresh_buffer(
-                ).get_current_line()
-            # read first page
-
-
-if __name__ == '__main__':
-    args = docopt(__doc__, version='shg-2014.02.22')
-
-    ptt_robot = PttRobot(wait_time=0.3, **LOGIN_INFO)
-    ptt_robot.login().toboard()
-    board_index_content = ptt_robot.CtrlL().safe_content()
-    assert '看板《Segawar》' in board_index_content
-
-    if args['getindex']:
-        print(args['getindex'])
-        aid = args['<id>']
-        ptt_robot.keyin(aid).enter().wait().download_article()
-    else:
-        pass
-
-    # mission 1: scan all post have flyllis name (in first page)
-    # ptt_robot.mission1(range(1900,2200))  # from 2200 ~ 2700
-    # 求快沒有意義，因為良率重於一切。理想的良率是 90%，重複驗證一次以後即可降至 1% miss。第二次是 100%!!
-    # target_ids = []
-    # mission 2: print titles
-    # ptt_robot.mission2(target_ids)
-    # mission 3: download articles
-
-
-"""
-    article = BBSArticle()
-    for i in range(7):
-        c = ptt_robot.right().CtrlL().safe_content()
-        c = c.split('\x1b[H\x1b[2J')[-1]  # CtrlL will keep response, just append new content
-        article.devsave('a-ctrl-%s.txt' % (i+1), c)
-        print(i)
-
-
-from pttcrawer import PttRobot, BBSArticle, BBSPage, re
-article = BBSArticle()
-for i in range(7):
-    print(i+1);
-    article.page[i+1] = article.devload('a-ctrl-%s.txt' % (i+1))
-    article.feedpage( article.page[i+1] )
-bbspage = BBSPage( article.page[1] )
-article.save()
-
-ptt_robot = PttRobot(wait_time=0.3, **LOGIN_INFO)
-ptt_robot.login().toboard()
-board_index_content = ptt_robot.safe_content()
-assert '看板《Segawar》' in board_index_content
-ptt_robot.enter()
-ptt_robot.wait().download_article()
-
-"""
